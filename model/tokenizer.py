@@ -106,6 +106,11 @@ def _build_vocab() -> Tuple[Dict[str, int], Dict[int, str]]:
         "<PAD>", "<BOS>", "<EOS>", "<UNK>",
     ]
 
+    # Table context — injected at start of every sequence so the model
+    # knows how many players are seated (2 = heads-up, 9 = full ring).
+    for n in range(2, 10):   # 2..9 players
+        tokens.append(f"<NUM_PLAYERS:{n}>")
+
     # Structural
     for i in range(1000):  # hand numbers 0-999
         tokens.append(f"<HAND:{i}>")
@@ -191,6 +196,7 @@ class PokerTokenizer:
         self,
         history: List[str],
         hole_cards: Optional[List[str]] = None,
+        num_players: Optional[int] = None,
         truncate_left: bool = True,
     ) -> List[int]:
         """
@@ -200,6 +206,9 @@ class PokerTokenizer:
         ----------
         history      : raw token strings from game.history
         hole_cards   : e.g. ["Ah", "Kd"] — inserted after BOS if provided
+        num_players  : total players at the table (2–9). Inserted as the very
+                       first token after BOS so the model always knows table
+                       size before seeing any action. If None, omitted.
         truncate_left: if too long, drop oldest tokens (keep most recent context)
 
         Returns
@@ -207,6 +216,12 @@ class PokerTokenizer:
         List[int] of length self.max_len
         """
         ids = [BOS_ID]
+
+        # Table-size context token — tells the model how many players are
+        # seated so it can adapt its strategy (e.g. looser in heads-up)
+        if num_players is not None:
+            n = max(2, min(9, num_players))   # clamp to valid 2..9 range
+            ids.append(self.tok2id.get(f"<NUM_PLAYERS:{n}>", UNK_ID))
 
         # Insert hole cards
         if hole_cards:

@@ -39,10 +39,29 @@ import os
 
 def cmd_train(args):
     from training.ppo_trainer import PPOTrainer, PPOConfig
+
+    if args.demo:
+        # ── Demo mode: tiny GRU model, CPU-optimised ──────────────────────
+        from model.transformer_demo import PokerTransformerDemo, DemoConfig, build_demo_training_pair
+        print("[Demo] Using tiny GRU model for fast CPU training.")
+        print("[Demo] ~28K params, seq_len=64, 50 hands/rollout.")
+        print("[Demo] Expected: ~0.1–0.3s/epoch → 1000 epochs in 2–5 minutes.")
+        print("[Demo] Checkpoints → checkpoints_demo/")
+        _, _, trainer = build_demo_training_pair()
+        # Override epochs if explicitly passed
+        if args.epochs != 500:  # 500 is the default; only override if user set it
+            trainer.cfg.total_epochs = args.epochs
+        if args.checkpoint:
+            trainer.load_checkpoint(args.checkpoint)
+        trainer.train()
+        return
+
+    # ── Full model ─────────────────────────────────────────────────────────
     from model.transformer import TransformerConfig
 
     cfg = PPOConfig(
-        n_players=args.players,
+        min_players=args.min_players,
+        max_players=args.max_players,
         total_epochs=args.epochs,
         hands_per_rollout=args.rollout_hands,
         checkpoint_dir=args.checkpoint_dir,
@@ -86,7 +105,7 @@ def cmd_eval(args):
 
     rl_agent = RLAgent(model, tokenizer, player_id=0, device=device, explore=False)
 
-    players = [Player(i, f"P{i}", 1000) for i in range(args.players)]
+    players = [Player(i, f"P{i}", 2000) for i in range(args.players)]  # 100BB buy-in
     agents = {0: rl_agent}
     for i in range(1, args.players):
         agents[i] = RuleBasedAgent(aggression=0.5)
@@ -96,8 +115,8 @@ def cmd_eval(args):
     total_profit = 0
     for hand_num in range(args.hands):
         for p in players:
-            if p.chips < 40:
-                p.chips = 1000
+            if p.chips < 800:  # rebuy at 40BB — standard minimum buy-in threshold
+                p.chips = 2000
         chips_before = players[0].chips
         result = game.play_hand()
         profit = players[0].chips - chips_before
@@ -118,14 +137,14 @@ def cmd_simulate(args):
     from engine.player import Player
     from engine.game import Game
 
-    players = [Player(i, f"P{i}", 500) for i in range(args.players)]
+    players = [Player(i, f"P{i}", 2000) for i in range(args.players)]  # 100BB buy-in
     agents = {i: RuleBasedAgent(aggression=0.4) for i in range(args.players)}
     game = Game(players, agents, small_blind=10, big_blind=20)
 
     for hand_num in range(args.hands):
         for p in players:
-            if p.chips < 30:
-                p.chips = 500
+            if p.chips < 800:  # rebuy at 40BB
+                p.chips = 2000
         result = game.play_hand()
         if args.verbose:
             print(f"\n--- Hand {hand_num + 1} ---")
@@ -162,7 +181,8 @@ def main():
 
     # train
     train_p = sub.add_parser("train", help="Run PPO training")
-    train_p.add_argument("--players", type=int, default=6)
+    train_p.add_argument("--min-players", type=int, default=2, help="Min players per hand (default: 2)")
+    train_p.add_argument("--max-players", type=int, default=9, help="Max players per hand (default: 9)")
     train_p.add_argument("--epochs", type=int, default=500)
     train_p.add_argument("--rollout-hands", type=int, default=200)
     train_p.add_argument("--d-model", type=int, default=128)
@@ -170,6 +190,8 @@ def main():
     train_p.add_argument("--n-layers", type=int, default=4)
     train_p.add_argument("--checkpoint", type=str, default=None)
     train_p.add_argument("--checkpoint-dir", type=str, default="checkpoints")
+    train_p.add_argument("--demo", action="store_true",
+                        help="Use tiny GRU demo model (fast CPU training, ~28K params)")
 
     # eval
     eval_p = sub.add_parser("eval", help="Evaluate a saved model")

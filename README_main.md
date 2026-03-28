@@ -63,6 +63,11 @@ python main.py eval --checkpoint PATH [options]
 
 `BB/100` (big blinds per 100 hands) is the standard poker performance metric. A random agent scores ~0 BB/100. A winning agent should score > 5 BB/100 against rule-based opponents.
 
+> **Stack depth:** All commands use a 100 BB starting stack (2000 chips at SB=10/BB=20).
+> Players are automatically topped up to 100 BB when they fall below 40 BB between hands,
+> matching the auto top-up feature on online poker sites. This is a session-level setting —
+> the buy-in happens once when the session starts, not hand-by-hand.
+
 ---
 
 ### `simulate` — Quick Simulation
@@ -85,7 +90,7 @@ Runs `RuleBasedAgent` vs. `RuleBasedAgent` — useful for verifying the engine i
 --- Hand 1 ---
   Winners : [2]
   Winnings: {2: 60}
-  Stacks  : {0: 480, 1: 470, 2: 550, 3: 500, 4: 500, 5: 500}
+  Stacks  : {0: 1980, 1: 1970, 2: 2050, 3: 2000, 4: 2000, 5: 2000}
 
 --- Hand 2 ---
   Winners : [0]

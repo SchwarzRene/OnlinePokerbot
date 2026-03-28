@@ -53,10 +53,26 @@ import torch.nn.functional as F
 from abc import ABC, abstractmethod
 from typing import Optional, List
 
+from dataclasses import dataclass
 from engine.game import GameState
 from engine.player import Action, ActionType
 from model.tokenizer import PokerTokenizer, bucket_midpoint, AMT_BUCKETS
 from model.transformer import PokerTransformer
+
+
+# ---------------------------------------------------------------------------
+# Experience (duplicated here to avoid circular import with ppo_trainer)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Experience:
+    """One decision step — stored in RLAgent.hand_buffer and PPO rollout buffer."""
+    token_ids: torch.Tensor
+    action_idx: int
+    log_prob: float
+    value: float
+    reward: float
+    done: bool
 
 
 # ---------------------------------------------------------------------------
@@ -268,11 +284,14 @@ class RLAgent(BaseAgent):
         self.explore = explore
         self.temperature = temperature
 
-        # Populated after each call (used by PPO trainer)
+        # Per-decision state (overwritten each call — kept for compat)
         self.last_log_prob: float = 0.0
         self.last_value: float = 0.0
         self.last_action_idx: int = 0
         self.last_token_ids: Optional[torch.Tensor] = None
+
+        # Accumulates every decision this hand; flushed by the trainer after each hand.
+        self._hand_buffer: List[Experience] = []
 
     def __call__(self, state: GameState) -> Action:
         # Encode game history
@@ -280,7 +299,11 @@ class RLAgent(BaseAgent):
                      .replace("♥","h").replace("♠","s")
                      for c in (state.you.hole_cards or [])]
 
-        token_ids = self.tokenizer.encode(state.history, hole_cards=hole_strs)
+        token_ids = self.tokenizer.encode(
+            state.history,
+            hole_cards=hole_strs,
+            num_players=len(state.players),
+        )
         token_tensor = torch.tensor([token_ids], dtype=torch.long, device=self.device)
 
         self.model.eval() if not self.explore else self.model.train()
@@ -298,11 +321,21 @@ class RLAgent(BaseAgent):
             dist = torch.distributions.Categorical(probs)
             log_prob = dist.log_prob(action_idx).item()
 
-        # Store for PPO
+        # Store for PPO (single-step compat + hand buffer accumulation)
         self.last_log_prob = log_prob
         self.last_value = values.squeeze().item()
         self.last_action_idx = action_idx.item()
         self.last_token_ids = token_tensor.squeeze(0)
+
+        # Accumulate into the hand buffer (reward/done filled in by trainer at hand end)
+        self._hand_buffer.append(Experience(
+            token_ids=self.last_token_ids.cpu(),
+            action_idx=self.last_action_idx,
+            log_prob=self.last_log_prob,
+            value=self.last_value,
+            reward=0.0,   # placeholder — set by trainer when hand ends
+            done=False,   # placeholder
+        ))
 
         # Decode to Action
         action_token = self.tokenizer.decode_action(self.last_action_idx)
@@ -318,6 +351,18 @@ class RLAgent(BaseAgent):
             amount = 0
 
         return Action(action_type, amount, state.you.id, state.street)
+
+    def flush_hand_buffer(self) -> List[Experience]:
+        """
+        Return and clear all experiences accumulated during this hand.
+        Called by PPOTrainer after game.play_hand() returns.
+        The trainer assigns the terminal reward to the last experience
+        and zero reward to all earlier ones before adding them to the
+        rollout buffer.
+        """
+        exps = list(self._hand_buffer)
+        self._hand_buffer.clear()
+        return exps
 
     def update_model(self, new_model: PokerTransformer):
         """Replace model weights (used for target network updates)."""
